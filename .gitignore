@@ -1,174 +1,211 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# -*- coding: utf-8 -*-
+"""
+Integrated DFT+U/ML Workflow with AI Enhancements
+Original Paper: Phys. Chem. Chem. Phys., 2025, 27, 5338 (DOI: 10.1039/d4cp03397c)
+AI Improvements: SHAP, Bayesian Opt, Active Learning, VAE, BNN, Optuna, LLM
+"""
 
-# C extensions
-*.so
+import numpy as np
+import pandas as pd
+import shap
+from skopt import gp_minimize
+from skopt.space import Real
+from tensorflow.keras.layers import Dense, Input, Lambda
+from tensorflow.keras.models import Model
+import tensorflow_probability as tfp
+import optuna
+from transformers import pipeline
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import KFold, cross_val_score, train_test_split
+from sklearn.metrics import r2_score
+import matplotlib.pyplot as plt
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# ----------------------------
+# 1. ORIGINAL ALGORITHM STEPS
+# ----------------------------
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+def generate_dft_data():
+    """Synthetic DFT+U data generation (replace with real VASP outputs)"""
+    oxides = ["TiO2_rutile", "TiO2_anatase", "ZnO", "CeO2"]
+    data = []
+    for oxide in oxides:
+        for Up in np.arange(0, 10.5, 1.0):
+            for Ud in np.arange(2, 10.5, 1.0):
+                # Simulate DFT+U results with oxide-specific trends
+                if "TiO2" in oxide:
+                    band_gap = 3.0 + 0.1*Up - 0.05*Ud**2 + np.random.normal(0, 0.1)
+                    a = 4.6 + 0.02*Up - 0.01*Ud
+                elif "ZnO" in oxide:
+                    band_gap = 3.4 + 0.08*Up**2 - 0.03*Ud + np.random.normal(0, 0.15)
+                    a = 4.6 - 0.03*Ud
+                else:  # CeO2
+                    band_gap = 3.1 + 0.05*Up*Ud + np.random.normal(0, 0.2)
+                    a = 5.4 + 0.01*Up
+                data.append([oxide, Up, Ud, band_gap, a, a, a])  # Cubic: a=b=c
+    return pd.DataFrame(data, columns=["oxide", "Up", "Ud", "band_gap", "a", "b", "c"])
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+df_dft = generate_dft_data()
+X = df_dft[["Up", "Ud"]]
+y = df_dft["band_gap"]
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
+# Original ML Training (Polynomial + Random Forest)
+def train_original_models(X, y):
+    models = {
+        "PR": Pipeline([('poly', PolynomialFeatures(degree=2)), ('linear', LinearRegression())]),
+        "RFR": RandomForestRegressor(n_estimators=100, random_state=42)
+    }
+    kf = KFold(n_splits=5)
+    for name, model in models.items():
+        scores = cross_val_score(model, X, y, cv=kf, scoring='r2')
+        print(f"{name} Avg R²: {np.mean(scores):.3f}")
+    return models["RFR"].fit(X, y)  # Return best model
 
-# Translations
-*.mo
-*.pot
+original_model = train_original_models(X, y)
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+# ----------------------------
+# 2. AI IMPROVEMENTS INTEGRATION
+# ----------------------------
 
-# Flask stuff:
-instance/
-.webassets-cache
+# A. Explainable AI (SHAP)
+def explain_model(model, X):
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X)
+    shap.summary_plot(shap_values, X, show=False)
+    plt.savefig("shap_plot.png", dpi=300)
+    plt.close()
 
-# Scrapy stuff:
-.scrapy
+explain_model(original_model, X)
 
-# Sphinx documentation
-docs/_build/
+# B. Bayesian Optimization
+def optimize_u_params(model, target_gap=3.0, target_a=4.6):
+    def objective(params):
+        Up, Ud = params
+        pred_gap = model.predict([[Up, Ud]])[0]
+        pred_a = 4.6  # Simplified (in practice: predict from separate model)
+        return (abs(pred_gap - target_gap)/target_gap + abs(pred_a - target_a)/target_a)
+    
+    result = gp_minimize(objective, [(0,10), (2,10)], n_calls=30, random_state=42)
+    print(f"Optimal U: Up={result.x[0]:.2f} eV, Ud={result.x[1]:.2f} eV")
+    return result.x
 
-# PyBuilder
-.pybuilder/
-target/
+optimal_Up, optimal_Ud = optimize_u_params(original_model)
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# C. Active Learning
+def active_learning(X, y, init_size=10, n_queries=5):
+    X_pool, X_test, y_pool, y_test = train_test_split(X, y, test_size=0.3)
+    X_train = X_pool[:init_size]
+    y_train = y_pool[:init_size]
+    
+    for _ in range(n_queries):
+        model = RandomForestRegressor(n_estimators=100).fit(X_train, y_train)
+        std_pred = np.std([tree.predict(X_pool) for tree in model.estimators_], axis=0)
+        query_idx = np.argmax(std_pred)
+        X_train = pd.concat([X_train, X_pool.iloc[[query_idx]]])
+        y_train = np.append(y_train, y_pool.iloc[query_idx])
+    
+    return model
 
-# IPython
-profile_default/
-ipython_config.py
+al_model = active_learning(X, y)
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+# D. Generative AI (VAE)
+def build_vae(input_dim=2, latent_dim=2):
+    # Encoder
+    inputs = Input(shape=(input_dim,))
+    x = Dense(16, activation='relu')(inputs)
+    z_mean = Dense(latent_dim)(x)
+    z_log_var = Dense(latent_dim)(x)
+    
+    # Sampling
+    z = Lambda(lambda p: p[0] + tf.exp(0.5*p[1])*tf.random.normal(tf.shape(p[0]) )([z_mean, z_log_var])
+    
+    # Decoder
+    decoder = keras.Sequential([
+        Dense(16, activation='relu', input_dim=latent_dim),
+        Dense(input_dim, activation='linear')
+    ])
+    outputs = decoder(z)
+    
+    vae = Model(inputs, outputs)
+    vae.compile(optimizer='adam', loss='mse')
+    return vae
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+vae = build_vae()
+vae.fit(X, X, epochs=50, batch_size=16, verbose=0)
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
+# E. Bayesian Neural Network
+def build_bnn(input_dim):
+    model = keras.Sequential([
+        tfp.layers.DenseVariational(32, activation='relu', input_shape=(input_dim,)),
+        tfp.layers.DenseVariational(1)
+    ])
+    model.compile(loss='mse', optimizer='adam')
+    return model
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
+bnn = build_bnn(X.shape[1])
+bnn.fit(X.values, y.values, epochs=100, verbose=0)
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
-.pdm.toml
-.pdm-python
-.pdm-build/
+# F. Hyperparameter Tuning
+def tune_hyperparams(X, y):
+    def objective(trial):
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators', 50, 200),
+            'max_depth': trial.suggest_int('max_depth', 3, 10)
+        }
+        model = RandomForestRegressor(**params)
+        return -np.mean(cross_val_score(model, X, y, cv=5, scoring='r2'))
+    
+    study = optuna.create_study()
+    study.optimize(objective, n_trials=20)
+    return study.best_params
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
+best_params = tune_hyperparams(X, y)
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
+# G. LLM for Literature Extraction (Conceptual)
+def extract_u_params(text):
+    llm = pipeline("text-generation", model="gpt-4")
+    prompt = f"Extract all Hubbard U values from this text:\n{text}\nReturn as JSON."
+    return llm(prompt, max_length=200)
 
-# SageMath parsed files
-*.sage.py
+# Example usage:
+# literature_data = "Thoa et al. reported U_p=10 eV and U_d=8 eV for rutile TiO2..."
+# print(extract_u_params(literature_data))
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+# ----------------------------
+# 3. ENHANCED PREDICTION PIPELINE
+# ----------------------------
 
-# Spyder project settings
-.spyderproject
-.spyproject
+def enhanced_pipeline(oxide_type):
+    """Integrated workflow for a given oxide"""
+    # Load pre-trained models
+    models = {
+        "original": original_model,
+        "active_learning": al_model,
+        "bnn": bnn
+    }
+    
+    # Predict with uncertainty
+    X_new = pd.DataFrame([[optimal_Up, optimal_Ud]], columns=["Up", "Ud"])
+    preds = {}
+    for name, model in models.items():
+        if name == "bnn":
+            preds[name] = model(X_new.values).mean().numpy()[0]
+            preds[f"{name}_std"] = model(X_new.values).stddev().numpy()[0]
+        else:
+            preds[name] = model.predict(X_new)[0]
+    
+    # Generate hypothetical materials
+    latent_sample = np.random.normal(size=(1, 2))
+    generated_U = vae.decoder.predict(latent_sample)[0]
+    
+    return {
+        "optimal_U": (optimal_Up, optimal_Ud),
+        "predictions": preds,
+        "generated_U": generated_U,
+        "best_params": best_params
+    }
 
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
-
-# Ruff stuff:
-.ruff_cache/
-
-# PyPI configuration file
-.pypirc
+# Execute pipeline for rutile TiO2
+results = enhanced_pipeline("TiO2_rutile")
+print("\nEnhanced Pipeline Results:")
+for k, v in results.items():
+    print(f"{k}: {v}")
